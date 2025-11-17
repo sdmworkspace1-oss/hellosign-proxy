@@ -1,5 +1,5 @@
 // File: /api/webhook.js
-// Versi 13: Menghapus 'await' dari fetch untuk mencegah Vercel Timeout
+// Versi 14: Perbaikan Typo SyntaxError (tanda kutip)
 
 // ---------------------------------------------------------------
 // [KONFIGURASI VERCEL]
@@ -99,9 +99,7 @@ export default async function handler(req, res) {
     }
     console.log("DEBUG: Objek body setelah parse:", JSON.stringify(body));
 
-    // ---------------------------------------------------------------
     // [BAGIAN 1: HANDLE CHALLENGE TEST]
-    // ---------------------------------------------------------------
     if (body?.event?.event_type === 'callback_test') {
       const challenge = body?.event?.event_data?.challenge;
       if (challenge) {
@@ -115,16 +113,12 @@ export default async function handler(req, res) {
       }
     }
 
-    // ---------------------------------------------------------------
     // [BAGIAN 2: HANDLE EVENT BIASA]
-    // ---------------------------------------------------------------
     console.log(`Menerima event: ${body?.event?.event_type || 'Unknown'}`);
     res.setHeader('Content-Type', 'text/plain');
-    res.status(200).send('Hello API Event Received'); // Balasan ke Dropbox Sign SELESAI di sini.
+    res.status(200).send('Hello API Event Received');
 
-    // ---------------------------------------------------------------
     // [BAGIAN 3: FORWARD KE GOOGLE APPS SCRIPT]
-    // ---------------------------------------------------------------
     const GAS_WEBHOOK_URL = process.env.GAS_WEBHOOK_URL;
     if (!GAS_WEBHOOK_URL) {
        console.error("FATAL ERROR: GAS_WEBHOOK_URL belum di-set di Vercel!");
@@ -132,28 +126,22 @@ export default async function handler(req, res) {
     }
 
     try {
-      // ----------------------------------------------------
-      // [FIX UTAMA: 'await' DIHAPUS]
-      // ----------------------------------------------------
-      // Ini mencegah Vercel timeout. Kita biarkan GAS
-      // menangani antriannya sendiri dengan LockService.
       console.log("Memulai 'fetch' (fire-and-forget) ke GAS...");
-      
       fetch(GAS_WEBHOOK_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body) 
       }).catch((error) => {
-        // Tambahkan .catch() untuk mencatat error jika fetch awal gagal
         console.error('Latar belakang fetch gagal:', error.message);
       });
-      
       console.log(`Payload event ${body?.event?.event_type} telah dikirim (fire-and-forget).`);
-      // ----------------------------------------------------
-      // [AKHIR FIX]
-      // ----------------------------------------------------
+    
     } catch (error) {
-      console.error('Gagal saat mencoba 'fire-and-forget' fetch:', error.message);
+      // ----------------------------------------------------
+      // [INI ADALAH FIX-NYA]
+      // Menggunakan kutip ganda (") di luar string
+      // ----------------------------------------------------
+      console.error("Gagal saat mencoba 'fire-and-forget' fetch:", error.message);
     }
 
   } catch (err) {
