@@ -1,5 +1,5 @@
 // File: /api/webhook.js
-// Versi 5: Menangani 'multipart/form-data' dengan ekstraksi string JSON
+// Versi 7: Final (Menggabungkan 3 Perbaikan Presisi dari Review)
 
 // ---------------------------------------------------------------
 // [KONFIGURASI VERCEL]
@@ -12,9 +12,8 @@ export const config = {
 };
 
 // ---------------------------------------------------------------
-// [FUNGSI HELPER]
+// [FUNGSI HELPER 1: Get Raw Body]
 // ---------------------------------------------------------------
-// Fungsi ini membaca data mentah dari request stream
 async function getRawBody(req) {
   const chunks = [];
   for await (const chunk of req) {
@@ -24,80 +23,97 @@ async function getRawBody(req) {
 }
 
 // ---------------------------------------------------------------
+// [FUNGSI HELPER 2: Parser Manual (Versi Paling Aman)]
+// ---------------------------------------------------------------
+// (Termasuk perbaikan CRLF dan pengecekan 'name="json"')
+function parseMultipartWithoutBusboy(rawBodyString, boundary) {
+  try {
+    // FIX 2: Gunakan RegExp untuk menangani CRLF (\r\n)
+    const parts = rawBodyString.split(new RegExp(`\\r?\\n?--${boundary}`));
+
+    for (const part of parts) {
+      // FIX 3: Cek ketat, abaikan part kosong atau footer
+      if (!part.includes('Content-Disposition')) continue;
+      if (!part.includes('name="json"')) continue;
+
+      // cari JSON di dalam part
+      const jsonStart = part.indexOf('{');
+      const jsonEnd = part.lastIndexOf('}');
+
+      if (jsonStart !== -1 && jsonEnd > jsonStart) {
+        // .trim() untuk jaga-jaga jika ada spasi di sekitar JSON
+        return part.substring(jsonStart, jsonEnd + 1).trim(); 
+      }
+    }
+  } catch (err) {
+    console.error("Error di dalam parser manual:", err.message);
+  }
+
+  return null;
+}
+
+// ---------------------------------------------------------------
 // [HANDLER UTAMA]
 // ---------------------------------------------------------------
 export default async function handler(req, res) {
-  // 1. Hanya izinkan metode POST
   if (req.method !== 'POST') {
     return res.status(405).send('Method Not Allowed');
   }
 
-  let body; // Ini akan menjadi objek JSON kita
-  let rawBodyString; // Ini adalah data mentah
+  let body;
+  let rawBodyString;
 
   try {
-    // ---------------------------------------------------------------
-    // [PERBAIKAN UTAMA: CARA MEMBACA BODY]
-    // ---------------------------------------------------------------
     rawBodyString = await getRawBody(req);
-    
     if (!rawBodyString) {
-      console.error("Request body benar-benar kosong.");
+      console.error("Request body kosong.");
       return res.status(400).send('Bad Request: Empty body');
     }
 
     const contentType = req.headers['content-type'] || '';
-    
-    if (contentType.includes('application/json')) {
-      // KASUS 1: Ini adalah event normal (format raw JSON)
-      console.log("Mendeteksi format raw JSON (Real Event). Parsing...");
+
+    // Logika Parsing (berdasarkan Content-Type)
+    if (contentType.startsWith('multipart/form-data')) {
+      console.log("Mendeteksi multipart/form-data (Test Button).");
+      
+      const boundaryMatch = contentType.match(/boundary=(.+)/);
+      if (!boundaryMatch) {
+         throw new Error("Multipart tapi tidak ada boundary.");
+      }
+      
+      // FIX 1: Handle boundary dengan/tanpa tanda kutip
+      let boundary = boundaryMatch[1].trim().replace(/^"|"$/g, "");
+
+      const jsonString = parseMultipartWithoutBusboy(rawBodyString, boundary);
+      if (!jsonString) {
+         throw new Error("Tidak menemukan field 'json' di multipart body.");
+      }
+      body = JSON.parse(jsonString);
+
+    } else if (contentType.includes('application/json')) {
+      console.log("Mendeteksi raw JSON (Real Event).");
       body = JSON.parse(rawBodyString);
     
-    } else if (contentType.includes('multipart/form-data') || contentType.includes('application/x-www-form-urlencoded')) {
-      // KASUS 2: Ini adalah 'callback_test' (format form-data ATAU urlencoded)
-      console.log(`Mendeteksi format form/multipart (Test Button). CT: ${contentType}`);
-      
-      // EKSTRAK JSON DARI STRING MENTAH
-      // Kita cari '{' pertama dan '}' terakhir di dalam string
-      const jsonStartIndex = rawBodyString.indexOf('{');
-      const jsonEndIndex = rawBodyString.lastIndexOf('}');
+    } else if (contentType.includes('application/x-www-form-urlencoded')) {
+       console.log("Mendeteksi form-urlencoded (Test Button).");
+       const params = new URLSearchParams(rawBodyString);
+       const jsonString = params.get('json'); 
+       if (!jsonString) throw new Error("form-urlencoded tapi tidak ada key 'json'.");
+       body = JSON.parse(jsonString);
 
-      if (jsonStartIndex !== -1 && jsonEndIndex > jsonStartIndex) {
-        // Ekstrak string JSON-nya
-        const jsonString = rawBodyString.substring(jsonStartIndex, jsonEndIndex + 1);
-        
-        console.log("Berhasil mengekstrak string JSON dari body mentah.");
-        body = JSON.parse(jsonString);
-      } else {
-        console.error("Tidak dapat menemukan string JSON ({...}) di dalam body mentah.", rawBodyString);
-        return res.status(400).send('Bad Request: Invalid test format, JSON not found');
-      }
-      
     } else {
-      // Kasus aneh jika content-type tidak dikenal
-      console.warn(`Content-Type tidak dikenal: ${contentType}. Mencoba ekstraksi JSON...`);
-      // Ini blok yang gagal sebelumnya, kita ubah logikanya
-      const jsonStartIndex = rawBodyString.indexOf('{');
-      const jsonEndIndex = rawBodyString.lastIndexOf('}');
-      if (jsonStartIndex !== -1 && jsonEndIndex > jsonStartIndex) {
-        const jsonString = rawBodyString.substring(jsonStartIndex, jsonEndIndex + 1);
-        body = JSON.parse(jsonString);
-      } else {
-         throw new Error("Tidak dapat menemukan JSON di body dengan Content-Type tidak dikenal.");
-      }
+       throw new Error(`Content-Type tidak dikenal atau tidak didukung: ${contentType}`);
     }
-
-    // Jika 'body' masih belum ter-parse, lempar error
+    
     if (!body || typeof body !== 'object') {
       throw new Error("Gagal mem-parsing body menjadi objek.");
     }
 
     // ---------------------------------------------------------------
-    // [BAGIAN 1: HANDLE CHALLENGE TEST (Sekarang aman)]
+    // [BAGIAN 1: HANDLE CHALLENGE TEST]
     // ---------------------------------------------------------------
     if (body?.event?.event_type === 'callback_test') {
       const challenge = body?.event?.event_data?.challenge;
-      
       if (!challenge) {
         console.error("callback_test diterima, tapi challenge tidak ditemukan.");
         return res.status(400).send('Bad Request: Challenge missing');
@@ -109,14 +125,14 @@ export default async function handler(req, res) {
     }
 
     // ---------------------------------------------------------------
-    // [BAGIAN 2: HANDLE EVENT BIASA (Sekarang aman)]
+    // [BAGIAN 2: HANDLE EVENT BIASA]
     // ---------------------------------------------------------------
     console.log(`Menerima event: ${body?.event?.event_type || 'Unknown'}`);
     res.setHeader('Content-Type', 'text/plain');
     res.status(200).send('Hello API Event Received');
 
     // ---------------------------------------------------------------
-    // [BAGIAN 3: FORWARD KE GOOGLE APPS SCRIPT (Sekarang aman)]
+    // [BAGIAN 3: FORWARD KE GOOGLE APPS SCRIPT]
     // ---------------------------------------------------------------
     const GAS_WEBHOOK_URL = process.env.GAS_WEBHOOK_URL;
     if (!GAS_WEBHOOK_URL) {
@@ -136,9 +152,8 @@ export default async function handler(req, res) {
     }
 
   } catch (err) {
-    // Tangkap error (misalnya JSON parse error)
     console.error("Error besar di handler:", err.message);
-    console.error("Raw Body String (jika ada):", rawBodyString);
+    console.error("Raw Body String (jika ada):", rawBodyString.substring(0, 500) + "..."); // Truncate long body
     return res.status(500).send('Internal Server Error');
   }
 }
