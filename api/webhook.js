@@ -157,14 +157,14 @@ export default async function handler(req, res) {
     if (body.event.event_type === "callback_test") {
       const challenge = body.event?.event_data?.challenge;
       res.setHeader("Content-Type", "text/plain");
-      return res.status(200).send(challenge || "OK");
+      return res.status(200).send(challenge || "Hello API Event Received");
     }
 
     // -----------------------------------------------------------------------
     // BALAS DROPDOWN SIGN SECEPATNYA
     // -----------------------------------------------------------------------
     res.setHeader("Content-Type", "text/plain");
-    res.status(200).send("OK");
+    res.status(200).send("Hello API Event Received");
 
     // -----------------------------------------------------------------------
     // FIRE-AND-FORGET ke GAS
@@ -181,3 +181,4 @@ export default async function handler(req, res) {
     return res.status(500).send("Internal Error");
   }
 }
+
