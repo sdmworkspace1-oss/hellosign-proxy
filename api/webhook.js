@@ -1,5 +1,5 @@
 // File: /api/webhook.js
-// Versi 12: Fix (callback_test tanpa challenge HARUS membalas "Hello API Event Received")
+// Versi 13: Menghapus 'await' dari fetch untuk mencegah Vercel Timeout
 
 // ---------------------------------------------------------------
 // [KONFIGURASI VERCEL]
@@ -22,7 +22,7 @@ async function getRawBody(req) {
 }
 
 // ---------------------------------------------------------------
-// [FUNGSI HELPER 2: Parser Manual (Versi Paling Aman & Longgar)]
+// [FUNGSI HELPER 2: Parser Manual]
 // ---------------------------------------------------------------
 function parseMultipartWithoutBusboy(rawBodyString, boundary) {
   try {
@@ -100,32 +100,24 @@ export default async function handler(req, res) {
     console.log("DEBUG: Objek body setelah parse:", JSON.stringify(body));
 
     // ---------------------------------------------------------------
-    // [BAGIAN 1: HANDLE CHALLENGE TEST (FIX TERAKHIR)]
+    // [BAGIAN 1: HANDLE CHALLENGE TEST]
     // ---------------------------------------------------------------
     if (body?.event?.event_type === 'callback_test') {
       const challenge = body?.event?.event_data?.challenge;
-      
       if (challenge) {
-        // KASUS 1: Ada challenge, balas dengan challenge
         console.log("Menerima callback_test (ADA challenge), membalas...");
         res.setHeader('Content-Type', 'text/plain');
         return res.status(200).send(challenge);
       } else {
-        // KASUS 2: Tidak ada challenge.
-        // Dropbox Sign bilang: balas "Hello API Event Received"
         console.log("Menerima callback_test (TANPA challenge), membalas 'Hello API Event Received'.");
-        
-        // --- INI ADALAH FIX-NYA ---
         res.setHeader('Content-Type', 'text/plain');
         return res.status(200).send("Hello API Event Received");
-        // -------------------------
       }
     }
 
     // ---------------------------------------------------------------
     // [BAGIAN 2: HANDLE EVENT BIASA]
     // ---------------------------------------------------------------
-    // (Blok ini sekarang hanya menangani event sungguhan, karena callback_test sudah ditangani di atas)
     console.log(`Menerima event: ${body?.event?.event_type || 'Unknown'}`);
     res.setHeader('Content-Type', 'text/plain');
     res.status(200).send('Hello API Event Received'); // Balasan ke Dropbox Sign SELESAI di sini.
@@ -140,15 +132,28 @@ export default async function handler(req, res) {
     }
 
     try {
-      console.log("Memulai 'await fetch' ke GAS...");
-      await fetch(GAS_WEBHOOK_URL, {
+      // ----------------------------------------------------
+      // [FIX UTAMA: 'await' DIHAPUS]
+      // ----------------------------------------------------
+      // Ini mencegah Vercel timeout. Kita biarkan GAS
+      // menangani antriannya sendiri dengan LockService.
+      console.log("Memulai 'fetch' (fire-and-forget) ke GAS...");
+      
+      fetch(GAS_WEBHOOK_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body) 
+      }).catch((error) => {
+        // Tambahkan .catch() untuk mencatat error jika fetch awal gagal
+        console.error('Latar belakang fetch gagal:', error.message);
       });
-      console.log(`Payload event ${body?.event?.event_type} berhasil diteruskan ke GAS.`);
+      
+      console.log(`Payload event ${body?.event?.event_type} telah dikirim (fire-and-forget).`);
+      // ----------------------------------------------------
+      // [AKHIR FIX]
+      // ----------------------------------------------------
     } catch (error) {
-      console.error('Gagal meneruskan payload ke GAS:', error.message);
+      console.error('Gagal saat mencoba 'fire-and-forget' fetch:', error.message);
     }
 
   } catch (err) {
