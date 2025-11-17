@@ -1,5 +1,5 @@
 // File: /api/webhook.js
-// Ini adalah Serverless Function Node.js yang berjalan di Vercel
+// Versi 3: Menangani format 'form-data' (untuk tes) DAN 'raw JSON' (untuk event)
 
 export default async function handler(req, res) {
   // 1. Hanya izinkan metode POST
@@ -7,63 +7,86 @@ export default async function handler(req, res) {
     return res.status(405).send('Method Not Allowed');
   }
 
-  // 'body' akan otomatis di-parse oleh Vercel
-  const body = req.body;
+  let body; // Kita akan definisikan 'body' secara manual
 
-  // ---------------------------------------------------------------
-  // [BAGIAN PENTING 1: HANDLE CHALLENGE TEST]
-  // ---------------------------------------------------------------
-  // Jika ini adalah 'callback_test', balas dengan challenge-nya.
-  if (body.event && body.event.event_type === 'callback_test') {
-    try {
-      const challenge = body.event.event_data.challenge;
+  try {
+    // ---------------------------------------------------------------
+    // [PERBAIKAN UTAMA: DETEKSI FORMAT DATA]
+    // ---------------------------------------------------------------
+    // Vercel sudah mem-parse body-nya. Kita cek formatnya.
+    
+    if (req.body && req.body.json) {
+      // KASUS 1: Ini adalah 'callback_test' (format form-data)
+      // Data JSON ada di dalam properti 'json' sebagai string.
+      console.log("Mendeteksi format form-data (req.body.json). Parsing...");
+      body = JSON.parse(req.body.json);
+    } else {
+      // KASUS 2: Ini adalah event normal (format raw JSON)
+      // 'req.body' sudah menjadi objek JSON.
+      console.log("Mendeteksi format raw JSON (req.body).");
+      body = req.body;
+    }
+
+    // Cek lagi jika body masih kosong/invalid
+    if (!body || typeof body !== 'object') {
+      console.error("Body request kosong atau format tidak dikenal.", req.body);
+      return res.status(400).send('Bad Request: Body not recognized');
+    }
+
+    // ---------------------------------------------------------------
+    // [BAGIAN 1: HANDLE CHALLENGE TEST (Sekarang aman)]
+    // ---------------------------------------------------------------
+    // Kode ini sekarang aman karena 'body' sudah pasti objek JSON
+    if (body?.event?.event_type === 'callback_test') {
+      const challenge = body?.event?.event_data?.challenge;
+      
+      if (!challenge) {
+        console.error("callback_test diterima, tapi challenge tidak ditemukan.");
+        return res.status(400).send('Bad Request: Challenge missing');
+      }
+      
       console.log("Menerima callback_test, membalas dengan challenge...");
-
-      // Kirim balasan challenge sebagai text/plain
       res.setHeader('Content-Type', 'text/plain');
       return res.status(200).send(challenge);
-    } catch (error) {
-      console.error("Error saat handle callback_test:", error.message);
-      return res.status(500).send('Error handling test');
     }
-  }
 
-  // ---------------------------------------------------------------
-  // [BAGIAN PENTING 2: HANDLE EVENT BIASA]
-  // ---------------------------------------------------------------
-  // Untuk SEMUA event lainnya, segera balas HelloSign
-  // dengan string yang mereka wajibkan.
-  console.log(`Menerima event: ${body.event ? body.event.event_type : 'Unknown'}`);
-  res.setHeader('Content-Type', 'text/plain');
-  res.status(200).send('Hello API Event Received');
+    // ---------------------------------------------------------------
+    // [BAGIAN 2: HANDLE EVENT BIASA]
+    // ---------------------------------------------------------------
+    console.log(`Menerima event: ${body?.event?.event_type || 'Unknown'}`);
+    res.setHeader('Content-Type', 'text/plain');
+    res.status(200).send('Hello API Event Received');
 
-  // ---------------------------------------------------------------
-  // [BAGIAN PENTING 3: FORWARD KE GOOGLE APPS SCRIPT]
-  // ---------------------------------------------------------------
-  // Dapatkan URL Web App GAS Anda dari Environment Variables Vercel
-  const GAS_WEBHOOK_URL = process.env.GAS_WEBHOOK_URL;
+    // ---------------------------------------------------------------
+    // [BAGIAN 3: FORWARD KE GOOGLE APPS SCRIPT]
+    // ---------------------------------------------------------------
+    const GAS_WEBHOOK_URL = process.env.GAS_WEBHOOK_URL;
 
-  if (!GAS_WEBHOOK_URL) {
-     console.error("ERROR: GAS_WEBHOOK_URL belum di-set di Vercel!");
-     return; // Hentikan di sini jika URL tidak ada
-  }
+    if (!GAS_WEBHOOK_URL) {
+       console.error("FATAL ERROR: GAS_WEBHOOK_URL belum di-set di Vercel!");
+       return; // Hentikan jika URL GAS tidak ada
+    }
 
-  // SETELAH merespon HelloSign, kita teruskan datanya ke GAS.
-  // Kita tidak perlu 'await' karena kita tidak peduli balasannya.
-  try {
-    fetch(GAS_WEBHOOK_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      // Vercel sudah memberi kita JSON (req.body),
-      // tapi GAS 'doPost(e)' mengharapkan string di e.postData.contents
-      // Jadi, kita kirim kembali sebagai string.
-      body: JSON.stringify(body) 
-    });
+    try {
+      // Kirim data yang SUDAH DI-PARSE (body)
+      // ke GAS, tapi ubah kembali ke string
+      fetch(GAS_WEBHOOK_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        // GAS doPost(e) mengharapkan string di e.postData.contents
+        body: JSON.stringify(body) 
+      });
+      
+      console.log(`Payload event ${body?.event?.event_type} berhasil diteruskan ke GAS.`);
 
-    console.log(`Payload event ${body.event.event_type} berhasil diteruskan ke GAS.`);
+    } catch (error) {
+      console.error('Gagal meneruskan payload ke GAS:', error.message);
+    }
 
-  } catch (error) {
-    // Jika gagal meneruskan, catat error di log Vercel
-    console.error('Gagal meneruskan payload ke GAS:', error.message);
+  } catch (err) {
+    // Tangkap error parsing JSON atau error tak terduga lainnya
+    console.error("Error besar di handler:", err.message);
+    console.error("Data Mentah (mungkin):", req.body);
+    return res.status(500).send('Internal Server Error');
   }
 }
