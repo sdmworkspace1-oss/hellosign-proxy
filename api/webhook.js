@@ -1,5 +1,5 @@
 // File: /api/webhook.js
-// Versi 14: Perbaikan Typo SyntaxError (tanda kutip)
+// Versi 15: Final (Menerapkan 'safeForwardToGAS' dengan Delay + Retry)
 
 // ---------------------------------------------------------------
 // [KONFIGURASI VERCEL]
@@ -44,6 +44,34 @@ function parseMultipartWithoutBusboy(rawBodyString, boundary) {
 }
 
 // ---------------------------------------------------------------
+// [FUNGSI HELPER 3: SOLUSI TEMAN ANDA (Safe Forwarder)]
+// ---------------------------------------------------------------
+async function safeForwardToGAS(url, payload) {
+  // 1. Jeda awal 350ms agar tidak "bertabrakan" di GAS
+  await new Promise(r => setTimeout(r, 350));
+
+  // 2. Coba kirim 3x jika gagal
+  for (let i = 1; i <= 3; i++) {
+    try {
+      await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      console.log(`Forward ke GAS berhasil (attempt ${i}) untuk event: ${payload?.event?.event_type}`);
+      return; // Berhasil, keluar dari fungsi
+    } catch (err) {
+      console.error(`Forward ke GAS gagal (attempt ${i}) untuk event: ${payload?.event?.event_type}:`, err.message);
+      if (i < 3) {
+         await new Promise(r => setTimeout(r, 500)); // Jeda 500ms sebelum retry
+      }
+    }
+  }
+  console.error(`FINAL ERROR: Semua 3 attempt ke GAS gagal untuk event: ${payload?.event?.event_type}`);
+}
+
+// ---------------------------------------------------------------
 // [HANDLER UTAMA]
 // ---------------------------------------------------------------
 export default async function handler(req, res) {
@@ -65,7 +93,7 @@ export default async function handler(req, res) {
 
     // Logika Parsing
     if (contentType.startsWith('multipart/form-data')) {
-      console.log("Mendeteksi multipart/form-data (Test Button).");
+      console.log("Mendeteksi multipart/form-data.");
       const boundaryMatch = contentType.match(/boundary=(.+)/);
       if (!boundaryMatch) throw new Error("Multipart tapi tidak ada boundary.");
       let boundary = boundaryMatch[1].trim().replace(/^"|"$/g, "");
@@ -97,7 +125,7 @@ export default async function handler(req, res) {
     if (!body || typeof body !== 'object') {
       throw new Error("Gagal mem-parsing body menjadi objek.");
     }
-    console.log("DEBUG: Objek body setelah parse:", JSON.stringify(body));
+    console.log(`DEBUG: Objek body setelah parse: ${body?.event?.event_type}`);
 
     // [BAGIAN 1: HANDLE CHALLENGE TEST]
     if (body?.event?.event_type === 'callback_test') {
@@ -116,33 +144,25 @@ export default async function handler(req, res) {
     // [BAGIAN 2: HANDLE EVENT BIASA]
     console.log(`Menerima event: ${body?.event?.event_type || 'Unknown'}`);
     res.setHeader('Content-Type', 'text/plain');
-    res.status(200).send('Hello API Event Received');
+    res.status(200).send('Hello API Event Received'); // Balasan ke Dropbox Sign SELESAI di sini.
 
-    // [BAGIAN 3: FORWARD KE GOOGLE APPS SCRIPT]
+    // ---------------------------------------------------------------
+    // [BAGIAN 3: FORWARD KE GOOGLE APPS SCRIPT (FIXED)]
+    // ---------------------------------------------------------------
+    // (Mengganti blok try/catch lama dengan pemanggilan fungsi aman)
+    
     const GAS_WEBHOOK_URL = process.env.GAS_WEBHOOK_URL;
     if (!GAS_WEBHOOK_URL) {
        console.error("FATAL ERROR: GAS_WEBHOOK_URL belum di-set di Vercel!");
        return;
     }
-
-    try {
-      console.log("Memulai 'fetch' (fire-and-forget) ke GAS...");
-      fetch(GAS_WEBHOOK_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body) 
-      }).catch((error) => {
-        console.error('Latar belakang fetch gagal:', error.message);
-      });
-      console.log(`Payload event ${body?.event?.event_type} telah dikirim (fire-and-forget).`);
     
-    } catch (error) {
-      // ----------------------------------------------------
-      // [INI ADALAH FIX-NYA]
-      // Menggunakan kutip ganda (") di luar string
-      // ----------------------------------------------------
-      console.error("Gagal saat mencoba 'fire-and-forget' fetch:", error.message);
-    }
+    // Panggil fungsi 'safeForwardToGAS' tanpa 'await'
+    // Ini membuat Vercel merespon ke Dropbox Sign,
+    // TAPI tetap menjalankan 'safeForwardToGAS' di latar belakang.
+    safeForwardToGAS(GAS_WEBHOOK_URL, body);
+    
+    console.log(`Proses 'safeForwardToGAS' untuk event ${body?.event?.event_type} telah dimulai di latar belakang.`);
 
   } catch (err) {
     console.error("Error besar di handler:", err.message);
