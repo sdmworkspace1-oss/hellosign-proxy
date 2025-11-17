@@ -1,5 +1,5 @@
 // File: /api/webhook.js
-// Versi 11: Final (Fallback Multipart Aman + Await Fetch)
+// Versi 12: Fix (callback_test tanpa challenge HARUS membalas "Hello API Event Received")
 
 // ---------------------------------------------------------------
 // [KONFIGURASI VERCEL]
@@ -29,7 +29,6 @@ function parseMultipartWithoutBusboy(rawBodyString, boundary) {
     const parts = rawBodyString.split(new RegExp(`\\r?\\n?--${boundary}`));
     for (const part of parts) {
       if (!part.includes('Content-Disposition')) continue;
-      // Versi longgar: tidak lagi mewajibkan 'name="json"'
       const jsonStart = part.indexOf('{');
       const jsonEnd = part.lastIndexOf('}');
       if (jsonStart !== -1 && jsonEnd > jsonStart) {
@@ -49,7 +48,7 @@ function parseMultipartWithoutBusboy(rawBodyString, boundary) {
 // ---------------------------------------------------------------
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
-    return res.status(405).send('Method NotAllowed');
+    return res.status(405).send('Method Not Allowed');
   }
 
   let body;
@@ -70,35 +69,21 @@ export default async function handler(req, res) {
       const boundaryMatch = contentType.match(/boundary=(.+)/);
       if (!boundaryMatch) throw new Error("Multipart tapi tidak ada boundary.");
       let boundary = boundaryMatch[1].trim().replace(/^"|"$/g, "");
-      
       const jsonString = parseMultipartWithoutBusboy(rawBodyString, boundary);
-
       if (!jsonString) {
-        // ----------------------------------------------------
-        // [FIX 1: FALLBACK AMAN UNTUK MULTIPART]
-        // (Saran dari teman Anda)
-        // ----------------------------------------------------
         console.warn("Parser multipart tidak menemukan JSON. Mengecek raw body...");
-        
         if (rawBodyString.includes("callback_test")) {
           console.warn("Fallback: Mendeteksi 'callback_test', membuat body manual.");
-          body = {
-            event: { event_type: "callback_test" }
-          };
+          body = { event: { event_type: "callback_test" } };
         } else {
           throw new Error("Multipart tanpa JSON dan tidak dapat diparse.");
         }
-        // ----------------------------------------------------
-        // [AKHIR FIX 1]
-        // ----------------------------------------------------
       } else {
         body = JSON.parse(jsonString);
       }
-
     } else if (contentType.includes('application/json')) {
       console.log("Mendeteksi raw JSON (Real Event).");
       body = JSON.parse(rawBodyString);
-    
     } else if (contentType.includes('application/x-www-form-urlencoded')) {
        console.log("Mendeteksi form-urlencoded (Test Button).");
        const params = new URLSearchParams(rawBodyString);
@@ -115,25 +100,32 @@ export default async function handler(req, res) {
     console.log("DEBUG: Objek body setelah parse:", JSON.stringify(body));
 
     // ---------------------------------------------------------------
-    // [BAGIAN 1: HANDLE CHALLENGE TEST (Sudah fix dari V10)]
+    // [BAGIAN 1: HANDLE CHALLENGE TEST (FIX TERAKHIR)]
     // ---------------------------------------------------------------
     if (body?.event?.event_type === 'callback_test') {
       const challenge = body?.event?.event_data?.challenge;
       
       if (challenge) {
+        // KASUS 1: Ada challenge, balas dengan challenge
         console.log("Menerima callback_test (ADA challenge), membalas...");
         res.setHeader('Content-Type', 'text/plain');
         return res.status(200).send(challenge);
       } else {
-        console.log("Menerima callback_test (TANPA challenge), membalas 200 OK (text/plain).");
+        // KASUS 2: Tidak ada challenge.
+        // Dropbox Sign bilang: balas "Hello API Event Received"
+        console.log("Menerima callback_test (TANPA challenge), membalas 'Hello API Event Received'.");
+        
+        // --- INI ADALAH FIX-NYA ---
         res.setHeader('Content-Type', 'text/plain');
-        return res.status(200).send("ok");
+        return res.status(200).send("Hello API Event Received");
+        // -------------------------
       }
     }
 
     // ---------------------------------------------------------------
     // [BAGIAN 2: HANDLE EVENT BIASA]
     // ---------------------------------------------------------------
+    // (Blok ini sekarang hanya menangani event sungguhan, karena callback_test sudah ditangani di atas)
     console.log(`Menerima event: ${body?.event?.event_type || 'Unknown'}`);
     res.setHeader('Content-Type', 'text/plain');
     res.status(200).send('Hello API Event Received'); // Balasan ke Dropbox Sign SELESAI di sini.
@@ -148,9 +140,6 @@ export default async function handler(req, res) {
     }
 
     try {
-      // ----------------------------------------------------
-      // [FIX 2: TAMBAHKAN 'await' UNTUK RELIABILITY]
-      // ----------------------------------------------------
       console.log("Memulai 'await fetch' ke GAS...");
       await fetch(GAS_WEBHOOK_URL, {
         method: 'POST',
@@ -158,9 +147,6 @@ export default async function handler(req, res) {
         body: JSON.stringify(body) 
       });
       console.log(`Payload event ${body?.event?.event_type} berhasil diteruskan ke GAS.`);
-      // ----------------------------------------------------
-      // [AKHIR FIX 2]
-      // ----------------------------------------------------
     } catch (error) {
       console.error('Gagal meneruskan payload ke GAS:', error.message);
     }
